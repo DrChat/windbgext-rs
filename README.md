@@ -1,2 +1,2 @@
 # WinDbg extensions (in Rust)
-This repository contains a WinDbg plugin with a collection of useful extensions for kernel-mode debugging.
+This repository contains an example WinDbg plugin written in Rust.

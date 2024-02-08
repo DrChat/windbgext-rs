@@ -111,8 +111,6 @@ extern "C" fn bpproc(client: IDebugClient4, args: *const std::ffi::c_char) -> HR
             format_args!("process: {}", args.process),
         )?;
 
-        let bp = unsafe { ctrl.AddBreakpoint(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID)? };
-
         Ok(())
     };
 
