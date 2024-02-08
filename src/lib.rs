@@ -18,6 +18,7 @@ trait DebugControlExt {
     fn PrintLn(&self, mask: u32, message: std::fmt::Arguments) -> windows::core::Result<()>;
 }
 
+#[allow(non_snake_case)]
 impl DebugControlExt for IDebugControl7 {
     fn PrintLn(&self, mask: u32, message: std::fmt::Arguments) -> windows::core::Result<()> {
         let msg = CString::new(format_args!("{}\n", message).to_string()).unwrap();
@@ -26,29 +27,59 @@ impl DebugControlExt for IDebugControl7 {
     }
 }
 
-fn parse<T: Parser>(args: *const std::ffi::c_char) -> Result<T, clap::Error> {
-    let args = unsafe { CStr::from_ptr(args) }.to_string_lossy();
-    T::try_parse_from(shell_words::split(&args).unwrap().into_iter())
-}
+mod util {
+    use super::*;
 
-fn handle_result(client: IDebugClient4, res: anyhow::Result<()>) -> HRESULT {
-    match res {
-        Ok(_) => S_OK,
-        Err(e) => {
-            if let Ok(ctrl) = client.cast::<IDebugControl7>() {
-                let _ = ctrl.PrintLn(DEBUG_OUTCTL_ALL_CLIENTS, format_args!("error: {:?}", e));
-            }
+    fn parse<T: Parser>(args: *const std::ffi::c_char) -> Result<T, clap::Error> {
+        let args = unsafe { CStr::from_ptr(args) }.to_string_lossy();
+        T::try_parse_from(shell_words::split(&args).unwrap().into_iter())
+    }
 
-            println!("error: {:?}", e);
+    fn handle_result(client: IDebugClient4, res: anyhow::Result<()>) -> HRESULT {
+        match res {
+            Ok(_) => S_OK,
+            Err(e) => {
+                if let Ok(ctrl) = client.cast::<IDebugControl7>() {
+                    let _ = ctrl.PrintLn(DEBUG_OUTCTL_ALL_CLIENTS, format_args!("error: {:?}", e));
+                }
 
-            if let Ok(e) = e.downcast::<windows::core::Error>() {
-                e.code()
-            } else {
-                E_FAIL
+                println!("error: {:?}", e);
+
+                if let Ok(e) = e.downcast::<windows::core::Error>() {
+                    e.code()
+                } else {
+                    E_FAIL
+                }
             }
         }
     }
+
+    pub fn wrap_call<A: Parser>(
+        func: impl FnOnce(IDebugClient4, A) -> anyhow::Result<()>,
+        client: IDebugClient4,
+        args: *const std::ffi::c_char,
+    ) -> HRESULT {
+        let args = match parse::<A>(args) {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = e.render();
+                if let Ok(ctrl) = client.cast::<IDebugControl7>() {
+                    let _ = ctrl.PrintLn(
+                        DEBUG_OUTCTL_ALL_CLIENTS,
+                        format_args!("{}", msg),
+                    );
+                }
+
+                println!("error: {:?}", e);
+                return E_FAIL;
+            }
+        };
+
+        handle_result(client.clone(), func(client, args))
+    }
 }
+
+use util::wrap_call;
 
 /// Called by WinDbg when our plugin is loaded.
 #[export_name = "DebugExtensionInitialize"]
@@ -73,9 +104,7 @@ extern "C" fn bpproc(client: IDebugClient4, args: *const std::ffi::c_char) -> HR
         process: String,
     }
 
-    let res = (|| -> anyhow::Result<()> {
-        let args = parse::<Args>(args).context("failed to parse args")?;
-
+    let f = |client: IDebugClient4, args: Args| -> anyhow::Result<()> {
         let ctrl: IDebugControl7 = client.cast()?;
         ctrl.PrintLn(
             DEBUG_OUTCTL_ALL_CLIENTS,
@@ -85,7 +114,7 @@ extern "C" fn bpproc(client: IDebugClient4, args: *const std::ffi::c_char) -> HR
         let bp = unsafe { ctrl.AddBreakpoint(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID)? };
 
         Ok(())
-    })();
+    };
 
-    handle_result(client, res)
+    wrap_call(f, client, args)
 }
